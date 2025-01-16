@@ -283,7 +283,7 @@ print(f'Metrics for val set: {metrics}')
 predictions, label_ids, metrics = trainer.predict(test_dataset)
 result = {args.task: {'predictions': predictions, 'label_ids': label_ids, 'metrics': metrics}}
 
-with open(f'test_results/result_{args.task}_{args.model.replace("/","_")}.pickle', 'wb') as f:
+with open(f'test_results/result_{args.task}_{args.model.replace("/","_")}_{args.seed}.pickle', 'wb') as f:
     pickle.dump(result, f)
 
 print(metrics)
