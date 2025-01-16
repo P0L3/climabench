@@ -1,4 +1,4 @@
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, Trainer, TrainingArguments, EarlyStoppingCallback, BertTokenizer, RobertaTokenizer
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, Trainer, TrainingArguments, EarlyStoppingCallback
 import torch
 import torch.nn as nn
 import numpy as np
@@ -11,31 +11,9 @@ import os
 import wandb
 from transformers import set_seed
 
-
-
-# set_seed(3005)
-
-parser = argparse.ArgumentParser()
-
-parser.add_argument("--task", required=True,
-                    help="Tasks like ClimaText, SciDCC")
-parser.add_argument("--run-name", required=True,
-                    help="Run Name for wandb logging")
-parser.add_argument("--model", type=str, default="bert-base-uncased",
-                    help="huggingface model to train and test")
-parser.add_argument("--max-len", type=int, default=512,
-                    help="huggingface model max length")
-parser.add_argument("--epochs", default=5, type=int,
-                    help="number of epochs to train")
-parser.add_argument("--per_device_train_batch_size", default=32, type=int,
-                    help="per_device_train_batch_size")
-parser.add_argument("--per_device_eval_batch_size", default=64, type=int,
-                    help="per_device_eval_batch_size")
-parser.add_argument("--seed", type=int, default=0,  # Default seed is 42
-                    help="Random seed for reproducibility")
-args = parser.parse_args()
-
-set_seed(args.seed) # original seed 0
+# set_seed(0) # OG seed
+# set_seed(3005) # OG seed
+set_seed(208)
 
 class CustomTrainer(Trainer):
 
@@ -66,7 +44,25 @@ class CustomTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
-os.environ["WANDB_PROJECT"] = 'climate_glue_acl_5seed'
+parser = argparse.ArgumentParser()
+
+parser.add_argument("--task", required=True,
+                    help="Tasks like ClimaText, SciDCC")
+parser.add_argument("--run-name", required=True,
+                    help="Run Name for wandb logging")
+parser.add_argument("--model", type=str, default="bert-base-uncased",
+                    help="huggingface model to train and test")
+parser.add_argument("--max-len", type=int, default=512,
+                    help="huggingface model max length")
+parser.add_argument("--epochs", default=5, type=int,
+                    help="number of epochs to train")
+parser.add_argument("--per_device_train_batch_size", default=32, type=int,
+                    help="per_device_train_batch_size")
+parser.add_argument("--per_device_eval_batch_size", default=64, type=int,
+                    help="per_device_eval_batch_size")
+
+args = parser.parse_args()
+os.environ["WANDB_PROJECT"] = 'climate_glue'
 os.environ["WANDB_RUN_GROUP"] = args.task
 
 
@@ -82,7 +78,7 @@ if args.task == 'ClimaText':
              }
     data_class = ClimaText(files)
 elif args.task == 'SciDCC':
-    file = 'SciDCC/SciDCC.csv'
+    file = 'SciDCC.csv'
     data_class = SciDCC(file)
 
 elif args.task == 'CDPCities':
@@ -221,31 +217,16 @@ def compute_metrics(pred):
     }
 
 
-if "CliReBERT" in args.model:
-    print("Loading (CliReBERT): ", args.model)
-    tokenizer = BertTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
-    model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
-if "CliSciBERT" in args.model:
-    print("Loading (CliSciBERT): ", args.model)
-    tokenizer = BertTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
-    model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
-if "SciClimateBERT" in args.model:
-    print("Loading (SciClimateBERT): ", args.model)
-    tokenizer = RobertaTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
-    model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
-if "CliReRoBERTa" in args.model:
-    print("Loading (CliReRoBERTa): ", args.model)
-    tokenizer = RobertaTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
-    model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
-else:
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForSequenceClassification.from_pretrained(args.model,
-                                                           num_labels=data_class.num_labels)
+tokenizer = AutoTokenizer.from_pretrained(args.model)
 
 train_dataset, val_dataset, test_dataset = data_class.prepare(tokenizer, args.max_len)
 
+model = AutoModelForSequenceClassification.from_pretrained(args.model,
+                                                           num_labels=data_class.num_labels)
+
+
 training_args = TrainingArguments(
-    output_dir=f'/projects/user/climate_glue_acl_5seed/results/{args.task}/{args.model}_{args.seed}',
+    output_dir=f'/projects/user/climateglue/results/{args.task}/{args.model}',
     num_train_epochs=args.epochs,
     per_device_train_batch_size=args.per_device_train_batch_size,
     per_device_eval_batch_size=args.per_device_eval_batch_size,
@@ -253,7 +234,7 @@ training_args = TrainingArguments(
     weight_decay=0.01,
     evaluation_strategy='epoch',
     save_strategy='epoch',
-    logging_dir='/projects/user/climate_glue_acl_5seed/logs',
+    logging_dir='/projects/user/climateglue/logs',
     dataloader_num_workers=8,
     report_to="wandb",
     run_name=args.run_name,
@@ -289,4 +270,3 @@ with open(f'test_results/result_{args.task}_{args.model.replace("/","_")}.pickle
 print(metrics)
 print(data_class.labels)
 wandb.log(metrics)
-
