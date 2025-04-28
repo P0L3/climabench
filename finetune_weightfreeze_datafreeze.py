@@ -13,29 +13,6 @@ import wandb
 from transformers import set_seed
 
 
-def init_weights_with_seed(m, init_seed=3005):
-    # Save the current state of random number generators
-    print("Init wieghts ...")
-    rng_state = torch.get_rng_state()
-    print(torch.get_rng_state())
-
-    # Set the seed specifically for initialization
-    torch.manual_seed(init_seed)
-    print(torch.get_rng_state())
-
-    if isinstance(m, nn.Linear):
-        # Example of using Xavier Uniform Initialization
-        init.xavier_uniform_(m.weight)  # Xavier initialization
-        if m.bias is not None:
-            init.constant_(m.bias, 0.0)  # Bias initialization to 0
-
-    # Restore the RNG state to prevent affecting other randomness
-    print(torch.get_rng_state())
-
-    torch.set_rng_state(rng_state)
-    print(torch.get_rng_state())
-
-
 # set_seed(3005)
 
 parser = argparse.ArgumentParser()
@@ -265,16 +242,12 @@ else:
     model = AutoModelForSequenceClassification.from_pretrained(args.model,
                                                            num_labels=data_class.num_labels)
 
-print(torch.get_rng_state())
 # Make weights of the head always same
-model.apply(init_weights_with_seed)
-# for name, param in model.named_parameters():
-#     print(name, param)
-print(torch.get_rng_state())
+set_seed(3005)
 train_dataset, val_dataset, test_dataset = data_class.prepare(tokenizer, args.max_len)
 
 training_args = TrainingArguments(
-    output_dir=f'/projects/user/climate_glue_acl_wf/results/{args.task}/{args.model}_{args.seed}',
+    output_dir=f'/projects/user/climate_glue_acl_wf_df/results/{args.task}/{args.model}_{args.seed}',
     num_train_epochs=args.epochs,
     per_device_train_batch_size=args.per_device_train_batch_size,
     per_device_eval_batch_size=args.per_device_eval_batch_size,
@@ -282,7 +255,7 @@ training_args = TrainingArguments(
     weight_decay=0.01,
     evaluation_strategy='epoch',
     save_strategy='epoch',
-    logging_dir='/projects/user/climate_glue_acl_wf/logs',
+    logging_dir='/projects/user/climate_glue_acl_wf_df/logs',
     dataloader_num_workers=8,
     report_to="wandb",
     run_name=args.run_name,
@@ -312,7 +285,7 @@ print(f'Metrics for val set: {metrics}')
 predictions, label_ids, metrics = trainer.predict(test_dataset)
 result = {args.task: {'predictions': predictions, 'label_ids': label_ids, 'metrics': metrics}}
 
-with open(f'test_results/wf_result_{args.task}_{args.model.replace("/","_")}_{args.seed}.pickle', 'wb') as f:
+with open(f'test_results/df_wf_result_{args.task}_{args.model.replace("/","_")}_{args.seed}.pickle', 'wb') as f:
     pickle.dump(result, f)
 
 print(metrics)
