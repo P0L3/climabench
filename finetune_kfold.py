@@ -12,6 +12,9 @@ import wandb
 from transformers import set_seed
 from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.model_selection import train_test_split as tts
+from tqdm import tqdm
+import logging
+
 
 
 # set_seed(3005)
@@ -92,8 +95,32 @@ class CustomTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
-os.environ["WANDB_PROJECT"] = 'climate_glue_acl_Kfold'
-os.environ["WANDB_RUN_GROUP"] = args.task
+# --- Configuration (replace Hydra) ---
+class Config:
+    def __init__(self):
+        self.wandb_project = "climate_glue_acl_Kfold"  # Replace with your WandB project name
+        self.model_name = args.model  # Example model
+        self.dataset_name = args.task
+        self.dataset_config_name = "sst2"
+        self.n_splits = 5
+        self.seed = args.seed
+        self.output_dir = "/projects/user/climate_glue_acl_Kfold/results/"
+        self.per_device_train_batch_size = args.per_device_train_batch_size
+        self.per_device_eval_batch_size = args.per_device_eval_batch_size
+        self.learning_rate = 5e-5
+        self.num_train_epochs = 10
+        self.weight_decay = 0.01
+        self.logging_dir = "/projects/user/climate_glue_acl_Kfold/logs"
+        self.report_to = "wandb"
+        self.save_strategy = "epoch"
+cfg = Config()
+# --- End of Configuration ---
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# os.environ["WANDB_PROJECT"] = 'climate_glue_acl_Kfold'
+# os.environ["WANDB_RUN_GROUP"] = args.task
 
 
 device = torch.device('cuda') if torch.cuda.is_available() else 'cpu'
@@ -317,8 +344,16 @@ if args.k_folds is not None and args.k_folds > 1:
 
     all_fold_metrics = [] # To store metrics from each fold ####DO TU
     # 3. Loop through Folds
-    for fold_idx, (train_indices, test_indices) in enumerate(split_gen):
+    for fold_idx, (train_indices, test_indices) in tqdm(enumerate(split_gen)):
         print(f"\n--- Starting Fold {fold_idx + 1}/{args.k_folds} ---")
+        
+        # Initialize a new WandB run for each fold
+        run = wandb.init(
+            project=cfg.wandb_project,
+            name=f"{cfg.model_name.replace('/', '-')}-fold-{fold_idx+1}",  # Give each run a unique name
+            config=cfg.__dict__,  # Log configuration
+            reinit=True  # Important for initializing multiple runs in a loop
+        )
 
         # **CRITICAL: Re-initialize model from scratch for each fold**
         # This prevents knowledge leakage from previous folds. 
@@ -349,7 +384,6 @@ if args.k_folds is not None and args.k_folds > 1:
         # --- Split train_fold_dataset_full into train/validation for the Trainer ---
         print(f"Splitting fold {fold_idx + 1} training data into inner train/validation sets...")
         try:
-            
             # Get the label column values
             labels = train_fold_dataset_full[args.label_column_name]  # Replace with actual label column name
 
@@ -391,7 +425,7 @@ if args.k_folds is not None and args.k_folds > 1:
             save_strategy='epoch',
             logging_dir='/projects/user/climate_glue_acl_Kfold/logs',
             dataloader_num_workers=8,
-            report_to="wandb",
+            report_to=cfg.report_to if cfg.wandb_project else None,
             run_name=args.run_name+"_"+str(fold_idx),
             save_total_limit=4,
             load_best_model_at_end=True,
@@ -416,6 +450,7 @@ if args.k_folds is not None and args.k_folds > 1:
         trainer.save_model()
         predictions, label_ids, metrics = trainer.predict(val_fold_dataset)
         print(f'Metrics for val set: {metrics}')
+        
         predictions, label_ids, metrics = trainer.predict(test_fold_dataset)
         result = {args.task: {'predictions': predictions, 'label_ids': label_ids, 'metrics': metrics}}
 
@@ -426,6 +461,8 @@ if args.k_folds is not None and args.k_folds > 1:
         print(data_class.labels)
         wandb.log(metrics)
         all_fold_metrics.append(metrics)
+        
+        run.finish()
 
 # --- Aggregate and Report Results ---
 print("\n--- K-Fold Cross-Validation Results ---")
