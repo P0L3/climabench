@@ -11,7 +11,7 @@ import os
 import wandb
 from transformers import set_seed
 from sklearn.model_selection import KFold, StratifiedKFold
-
+from sklearn.model_selection import train_test_split as tts
 
 
 # set_seed(3005)
@@ -247,6 +247,7 @@ def compute_metrics(pred):
 
 
 ## Load the tokenizer
+print("Loading tokenizer.")
 if "CliReBERT" in args.model:
     print("Loading (CliReBERT) tokenizer: ", args.model)
     tokenizer = BertTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
@@ -302,6 +303,7 @@ if args.k_folds is not None and args.k_folds > 1:
          
     # 2. Prepare for Splitting
     if args.use_stratified_kfold:
+        print(full_dataset.column_names)
         if args.label_column_name not in full_dataset.column_names:
             raise ValueError(f"Label column '{args.label_column_name}' not found in dataset for StratifiedKFold.")
         labels = full_dataset[args.label_column_name]
@@ -347,24 +349,29 @@ if args.k_folds is not None and args.k_folds > 1:
         # --- Split train_fold_dataset_full into train/validation for the Trainer ---
         print(f"Splitting fold {fold_idx + 1} training data into inner train/validation sets...")
         try:
-            # Use train_test_split from the datasets library for easy splitting
-            # Stratify this inner split if possible and requested
-            stratify_column = args.label_column_name if args.use_stratified_kfold else None
-            train_val_split = train_fold_dataset_full.train_test_split(
-                test_size=args.validation_split_percentage,
-                seed=args.seed + fold_idx, # Use a seed, vary slightly per fold
-                stratify_by_column=stratify_column
+            
+            # Get the label column values
+            labels = train_fold_dataset_full[args.label_column_name]  # Replace with actual label column name
+
+            # Generate stratified indices using sklearn
+            train_indices, val_indices = tts(
+                list(range(len(labels))),
+                test_size=0.1,
+                stratify=labels,
+                random_state=args.seed + fold_idx
             )
-            # These will be used by the Trainer
-            train_fold_dataset = train_val_split['train']
-            val_fold_dataset = train_val_split['test']
+
+            # Use Hugging Face `.select()` to create subsets
+            train_fold_dataset = train_fold_dataset_full.select(train_indices)
+            val_fold_dataset = train_fold_dataset_full.select(val_indices)
+
             print(f"Inner split: {len(train_fold_dataset)} train, {len(val_fold_dataset)} validation samples.")
 
         except ValueError as e:
              # Handle cases where stratification might fail (e.g., too few samples for a class)
              print(f"Warning: Stratified train/validation split failed for fold {fold_idx + 1}: {e}. Splitting without stratification.")
              train_val_split = train_fold_dataset_full.train_test_split(
-                 test_size=args.validation_split_percentage,
+                 test_size=0.1,
                  seed=args.seed + fold_idx
              )
              train_fold_dataset = train_val_split['train']
@@ -385,7 +392,7 @@ if args.k_folds is not None and args.k_folds > 1:
             logging_dir='/projects/user/climate_glue_acl_Kfold/logs',
             dataloader_num_workers=8,
             report_to="wandb",
-            run_name=args.run_name,
+            run_name=args.run_name+"_"+str(fold_idx),
             save_total_limit=4,
             load_best_model_at_end=True,
             metric_for_best_model='eval_f1_macro',
@@ -418,50 +425,35 @@ if args.k_folds is not None and args.k_folds > 1:
         print(metrics)
         print(data_class.labels)
         wandb.log(metrics)
+        all_fold_metrics.append(metrics)
 
-training_args = TrainingArguments(
-    output_dir=f'/projects/user/climate_glue_acl_Kfold/results/{args.task}/{args.model}_{args.seed}',
-    num_train_epochs=args.epochs,
-    per_device_train_batch_size=args.per_device_train_batch_size,
-    per_device_eval_batch_size=args.per_device_eval_batch_size,
-    warmup_ratio=0.1,
-    weight_decay=0.01,
-    evaluation_strategy='epoch',
-    save_strategy='epoch',
-    logging_dir='/projects/user/climate_glue_acl_Kfold/logs',
-    dataloader_num_workers=8,
-    report_to="wandb",
-    run_name=args.run_name,
-    save_total_limit=4,
-    load_best_model_at_end=True,
-    metric_for_best_model='eval_f1_macro',
-    greater_is_better=True,
-    gradient_accumulation_steps=2,
-    gradient_checkpointing=True,
-    fp16=True,
-)
+# --- Aggregate and Report Results ---
+print("\n--- K-Fold Cross-Validation Results ---")
+if all_fold_metrics:
+    # Example: Aggregate 'eval_accuracy'
+    metric_keys = all_fold_metrics[0].keys()
+    aggregated_metrics = {}
+    for key in metric_keys:
+            try:
+                values = [m[key] for m in all_fold_metrics]
+                aggregated_metrics[f"{key}_mean"] = np.mean(values)
+                aggregated_metrics[f"{key}_std"] = np.std(values)
+            except (TypeError, KeyError):
+                print(f"Could not aggregate metric '{key}' (likely not numerical).")
+                aggregated_metrics[key] = 'N/A' # Or handle non-numeric metrics differently
 
-trainer = CustomTrainer(
-    model=model,
-    args=training_args,
-    compute_metrics=compute_metrics,
-    train_dataset=train_dataset,
-    eval_dataset=val_dataset,
-    class_weights=data_class.class_weights,
-    callbacks=[EarlyStoppingCallback(early_stopping_patience=3)]
-)
 
-trainer.train()
-trainer.save_model()
-predictions, label_ids, metrics = trainer.predict(val_dataset)
-print(f'Metrics for val set: {metrics}')
-predictions, label_ids, metrics = trainer.predict(test_dataset)
-result = {args.task: {'predictions': predictions, 'label_ids': label_ids, 'metrics': metrics}}
+    print("Aggregated Metrics (Mean +/- Std Dev across folds):")
+    for key, value in aggregated_metrics.items():
+        if '_mean' in key:
+            base_key = key.replace('_mean','')
+            mean_val = value
+            std_val = aggregated_metrics.get(f"{base_key}_std", 0)
+            print(f"  {base_key}: {mean_val:.4f} +/- {std_val:.4f}")
+        elif '_std' not in key and key in metric_keys: # Print non-aggregated keys once
+                print(f"  {key}: {value}") # Handle non-numeric or already aggregated
 
-with open(f'test_results/result_{args.task}_{args.model.replace("/","_")}_{args.seed}.pickle', 'wb') as f:
-    pickle.dump(result, f)
 
-print(metrics)
-print(data_class.labels)
-wandb.log(metrics)
-
+    #You might want to save the aggregated results to a file
+    with open(f"kfold_summary.json", "w") as f:
+        json.dump(aggregated_metrics, f, indent=4)
