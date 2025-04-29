@@ -92,7 +92,7 @@ class CustomTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
-os.environ["WANDB_PROJECT"] = 'climate_glue_acl_5seed'
+os.environ["WANDB_PROJECT"] = 'climate_glue_acl_Kfold'
 os.environ["WANDB_RUN_GROUP"] = args.task
 
 
@@ -110,7 +110,6 @@ if args.task == 'ClimaText':
 elif args.task == 'SciDCC':
     file = 'SciDCC/SciDCC.csv'
     data_class = SciDCC(file)
-
 elif args.task == 'CDPCities':
     folder = './CDP/Cities/Cities Responses/'
     data_class = CDPCities(folder)
@@ -246,9 +245,34 @@ def compute_metrics(pred):
         'support': support
     }
 
-## Manual implementation of prepare function (data_class.prepare()) (without tokenization)
-dataset = data_class.load_dataset()
-train_dataset, val_dataset, test_dataset = dataset["train"], dataset["val"], dataset["test"]
+
+## Load the tokenizer
+if "CliReBERT" in args.model:
+    print("Loading (CliReBERT) tokenizer: ", args.model)
+    tokenizer = BertTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
+    # model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
+if "CliSciBERT" in args.model:
+    print("Loading (CliSciBERT) tokenizer: ", args.model)
+    tokenizer = BertTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
+    # model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
+if "SciClimateBERT" in args.model:
+    print("Loading (SciClimateBERT) tokenizer: ", args.model)
+    tokenizer = RobertaTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
+    # model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
+if "CliReRoBERTa" in args.model:
+    print("Loading (CliReRoBERTa) tokenizer: ", args.model)
+    tokenizer = RobertaTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
+    # model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
+else:
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    # model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
+
+
+
+## Prepare and load full dataset
+train_dataset, val_dataset, test_dataset = data_class.prepare(tokenizer)
+
+
 
 if args.k_folds is not None and args.k_folds > 1:
     print(f" K-Fold Cross-Validation enabled with k={args.k_folds}")
@@ -291,41 +315,112 @@ if args.k_folds is not None and args.k_folds > 1:
 
     all_fold_metrics = [] # To store metrics from each fold ####DO TU
     # 3. Loop through Folds
-    for fold_idx, (train_indices, val_indices) in enumerate(split_gen):
+    for fold_idx, (train_indices, test_indices) in enumerate(split_gen):
         print(f"\n--- Starting Fold {fold_idx + 1}/{args.k_folds} ---")
 
         # **CRITICAL: Re-initialize model from scratch for each fold**
         # This prevents knowledge leakage from previous folds. 
         if "CliReBERT" in args.model:
             print("Loading (CliReBERT): ", args.model)
-            tokenizer = BertTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
+            # tokenizer = BertTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
             model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
         if "CliSciBERT" in args.model:
             print("Loading (CliSciBERT): ", args.model)
-            tokenizer = BertTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
+            # tokenizer = BertTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
             model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
         if "SciClimateBERT" in args.model:
             print("Loading (SciClimateBERT): ", args.model)
-            tokenizer = RobertaTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
+            # tokenizer = RobertaTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
             model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
         if "CliReRoBERTa" in args.model:
             print("Loading (CliReRoBERTa): ", args.model)
-            tokenizer = RobertaTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
+            # tokenizer = RobertaTokenizer.from_pretrained(args.model)#pretrain_path, vocab_file=pretrain_path + "/tokenizer.json")
             model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
         else:
-            tokenizer = AutoTokenizer.from_pretrained(args.model)
-            model = AutoModelForSequenceClassification.from_pretrained(args.model,
-                                                                num_labels=data_class.num_labels)
+            # tokenizer = AutoTokenizer.from_pretrained(args.model)
+            model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=data_class.num_labels)
 
 
         # Create train/validation datasets for the current fold
-        train_fold_dataset = full_dataset.select(train_indices)
-        val_fold_dataset = full_dataset.select(val_indices)
+        train_fold_dataset_full = full_dataset.select(train_indices)
         
+        # --- Split train_fold_dataset_full into train/validation for the Trainer ---
+        print(f"Splitting fold {fold_idx + 1} training data into inner train/validation sets...")
+        try:
+            # Use train_test_split from the datasets library for easy splitting
+            # Stratify this inner split if possible and requested
+            stratify_column = args.label_column_name if args.use_stratified_kfold else None
+            train_val_split = train_fold_dataset_full.train_test_split(
+                test_size=args.validation_split_percentage,
+                seed=args.seed + fold_idx, # Use a seed, vary slightly per fold
+                stratify_by_column=stratify_column
+            )
+            # These will be used by the Trainer
+            train_fold_dataset = train_val_split['train']
+            val_fold_dataset = train_val_split['test']
+            print(f"Inner split: {len(train_fold_dataset)} train, {len(val_fold_dataset)} validation samples.")
+
+        except ValueError as e:
+             # Handle cases where stratification might fail (e.g., too few samples for a class)
+             print(f"Warning: Stratified train/validation split failed for fold {fold_idx + 1}: {e}. Splitting without stratification.")
+             train_val_split = train_fold_dataset_full.train_test_split(
+                 test_size=args.validation_split_percentage,
+                 seed=args.seed + fold_idx
+             )
+             train_fold_dataset = train_val_split['train']
+             val_fold_dataset = train_val_split['test']
+             print(f"Inner split (non-stratified): {len(train_fold_dataset)} train, {len(val_fold_dataset)} validation samples.")
+
+        test_fold_dataset = full_dataset.select(test_indices)
         
+        training_args = TrainingArguments(
+            output_dir=f'/projects/user/climate_glue_acl_Kfold/results/{args.task}/{args.model}_{args.seed}_{fold_idx}',
+            num_train_epochs=args.epochs,
+            per_device_train_batch_size=args.per_device_train_batch_size,
+            per_device_eval_batch_size=args.per_device_eval_batch_size,
+            warmup_ratio=0.1,
+            weight_decay=0.01,
+            evaluation_strategy='epoch',
+            save_strategy='epoch',
+            logging_dir='/projects/user/climate_glue_acl_Kfold/logs',
+            dataloader_num_workers=8,
+            report_to="wandb",
+            run_name=args.run_name,
+            save_total_limit=4,
+            load_best_model_at_end=True,
+            metric_for_best_model='eval_f1_macro',
+            greater_is_better=True,
+            gradient_accumulation_steps=2,
+            gradient_checkpointing=True,
+            fp16=True,
+        )
+        
+        trainer = CustomTrainer(
+            model=model,
+            args=training_args,
+            compute_metrics=compute_metrics,
+            train_dataset=train_fold_dataset,
+            eval_dataset=val_fold_dataset,
+            class_weights=data_class.class_weights,
+            callbacks=[EarlyStoppingCallback(early_stopping_patience=3)]
+        )
+
+        trainer.train()
+        trainer.save_model()
+        predictions, label_ids, metrics = trainer.predict(val_fold_dataset)
+        print(f'Metrics for val set: {metrics}')
+        predictions, label_ids, metrics = trainer.predict(test_fold_dataset)
+        result = {args.task: {'predictions': predictions, 'label_ids': label_ids, 'metrics': metrics}}
+
+        with open(f'test_results/result_{args.task}_{args.model.replace("/","_")}_{args.seed}_{fold_idx}.pickle', 'wb') as f:
+            pickle.dump(result, f)
+
+        print(metrics)
+        print(data_class.labels)
+        wandb.log(metrics)
 
 training_args = TrainingArguments(
-    output_dir=f'/projects/user/climate_glue_acl_5seed/results/{args.task}/{args.model}_{args.seed}',
+    output_dir=f'/projects/user/climate_glue_acl_Kfold/results/{args.task}/{args.model}_{args.seed}',
     num_train_epochs=args.epochs,
     per_device_train_batch_size=args.per_device_train_batch_size,
     per_device_eval_batch_size=args.per_device_eval_batch_size,
@@ -333,7 +428,7 @@ training_args = TrainingArguments(
     weight_decay=0.01,
     evaluation_strategy='epoch',
     save_strategy='epoch',
-    logging_dir='/projects/user/climate_glue_acl_5seed/logs',
+    logging_dir='/projects/user/climate_glue_acl_Kfold/logs',
     dataloader_num_workers=8,
     report_to="wandb",
     run_name=args.run_name,
